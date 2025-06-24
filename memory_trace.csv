@@ -1,0 +1,25 @@
+timestamp_ns,address,bytes,type,tensor,tile,function
+0,0x0,8192,read,A,"(1, 4096, 4096)",Matmul
+0,0x0,33554432,read,B,"(1, 4096, 4096)",Matmul
+0,0x0,8192,write,C,"(1, 4096, 4096)",Matmul
+0,0x0,256,read,A,"(1, 37, 128)",Matmul
+0,0x0,9472,read,B,"(1, 37, 128)",Matmul
+0,0x0,74,write,C,"(1, 37, 128)",Matmul
+0,0x0,8192,read,A,"(1, 37, 4096)",Matmul
+0,0x0,303104,read,B,"(1, 37, 4096)",Matmul
+0,0x0,74,write,C,"(1, 37, 4096)",Matmul
+0,0x0,74,read,A,"(1, 128, 37)",Matmul
+0,0x0,9472,read,B,"(1, 128, 37)",Matmul
+0,0x0,256,write,C,"(1, 128, 37)",Matmul
+0,0x0,2368,read,A,"(1, 128, 1184)",Matmul
+0,0x0,303104,read,B,"(1, 128, 1184)",Matmul
+0,0x0,256,write,C,"(1, 128, 1184)",Matmul
+0,0x0,8192,read,A,"(1, 4096, 4096)",Matmul
+0,0x0,33554432,read,B,"(1, 4096, 4096)",Matmul
+0,0x0,8192,write,C,"(1, 4096, 4096)",Matmul
+0,0x4b2ad000,8192,read,A,"(1, 16384, 4096)",Matmul
+0,0x86000000,134217728,read,B,"(1, 16384, 4096)",Matmul
+0,0x4b2b7000,32768,write,C,"(1, 16384, 4096)",Matmul
+0,0x0,32768,read,A,"(1, 4096, 16384)",Matmul
+0,0x0,134217728,read,B,"(1, 4096, 16384)",Matmul
+0,0x0,8192,write,C,"(1, 4096, 16384)",Matmul

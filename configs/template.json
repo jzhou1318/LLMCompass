@@ -1,6 +1,6 @@
 {
     "name": "NVIDIA A100(80GB)x4",
-    "device_count": 4,
+    "device_count": 1,
     "interconnect": {
         "link": {
             "name": "NVLink3",

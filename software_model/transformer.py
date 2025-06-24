@@ -388,7 +388,7 @@ class TransformerBlockAutoRegressionTP(Operator):
         self.layer_norm0 = LayerNorm(data_type)
         self.allreduce_mha = AllReduceMultiPCB(data_type)
         # # feed-forward network
-        self.H_matmul1 = Matmul(data_type)
+        self.H_matmul1 = Matmul(data_type, addresses = [int(0x14874b2ad000), int(0x148386000000), int(0x14874b2b7000)] )
         self.H_gelu = GeLU(data_type)
         self.H_matmul2 = Matmul(data_type)
         self.layer_norm1 = LayerNorm(data_type)

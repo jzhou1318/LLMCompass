@@ -1,4 +1,4 @@
-from utils import size
+from utils import size, TraceLogger
 from typing import List, Tuple
 from hardware_model.device import Device
 from software_model.operators import Operator
@@ -120,13 +120,21 @@ class BatchedMatmul(Operator):
 
 
 class Matmul(Operator):
-    def __init__(self, data_type: DataType):
+    def __init__(self, data_type: DataType, addresses = [0, 0, 0]):
         super().__init__(0, 0, 0, 0, data_type)
         self.input1_shape = None
         self.input2_shape = None
         self.output_shape = None
+
+        print(f"Addresses: {addresses}")
+        self.input1_address = addresses[0]
+        self.input2_address = addresses[1]
+        self.output_address = addresses[2]
+
         self.look_up_table = None
         self.best_mapping = None
+
+        self.function_name = "Matmul"
 
     def __call__(self, input1: Tensor, input2: Tensor) -> Tensor:
         # [bs, M, K] * [K, N] = [bs, M, N]
@@ -134,7 +142,12 @@ class Matmul(Operator):
         assert self.data_type == input2.data_type
         self.input1_shape = input1.shape
         self.input2_shape = input2.shape
-        self.M = size(self.input1_shape[:-1])
+        print(f"Matmul input1 shape: {self.input1_shape}")
+        print(f"Matmul input2 shape: {self.input2_shape}")
+
+        
+
+        self.M = size(self.input1_shape[:-1])        
         self.K = self.input1_shape[-1]
         assert self.input2_shape[-2] == self.K
         self.N = self.input2_shape[-1]
@@ -144,8 +157,14 @@ class Matmul(Operator):
             self.output_shape = self.input1_shape[:-1] + [self.N]
         output = Tensor(self.output_shape, self.data_type)
         self.computational_graph = self.ComputationalGraph(
-            self.M, self.N, self.K, self.data_type
+            self.M, self.N, self.K, self.data_type, 
+            self.input1_address,
+            self.input2_address,
+            self.output_address
         )
+        print(f"Matmul M: {self.M}")
+        print(f"Matmul N: {self.N}")
+        print(f"Matmul K: {self.K}")
         self.flop_count = 2 * self.M * self.K * self.N
         self.io_count = self.M * self.K + self.K * self.N + self.M * self.N
         # print(f'{self.M}, {self.N}, {self.K}')
@@ -204,16 +223,25 @@ class Matmul(Operator):
                         yield m, n, k
 
     class ComputationalGraph:
-        def __init__(self, M: int, N: int, K: int, data_type: DataType):
+        def __init__(self, M: int, N: int, K: int, data_type: DataType, 
+                        input1_address = 0,
+                        input2_address = 0,
+                        output_address = 0):
             self.M = M
             self.N = N
             self.K = K
             self.data_type = data_type
+            self.input1_address = input1_address
+            self.input2_address = input2_address
+            self.output_address = output_address
 
         def display(self):
             print("-" * 10 + " Computational Graph " + "-" * 10)
             print(
                 f"M: {self.M}, N: {self.N}, K: {self.K}, word_size(B): {self.data_type.word_size}"
+            )
+            print(
+                f"input1_address: {hex(self.input1_address)}, input2_address: {hex(self.input2_address)}, output_addressK: {hex(self.output_address)}"
             )
 
     class Mapping:
@@ -276,12 +304,14 @@ class Matmul(Operator):
         self,
         pcb_module: Device,
         compile_mode: str = "exhaustive",
-    ):
+    ):  
+        print("COMPILE AND SIMULATE CALLED")
         min_cycle_count = 2**63 - 1
         best_mapping = None
         M = self.computational_graph.M
         N = self.computational_graph.N
         K = self.computational_graph.K
+        print(compile_mode)
         if (M == 1 or N == 1) and (
             compile_mode == "heuristic-GPU"
             or compile_mode == "heuristic-our-throughput"
@@ -299,7 +329,21 @@ class Matmul(Operator):
             self.latency = max(
                 compute_latency, io_latency
             )  # + pcb_module.io_module.latency * 2
+
+
+            size_A = M * K * self.data_type.word_size
+            size_B = K * N * self.data_type.word_size
+            size_C = M * N * self.data_type.word_size
+
+            timestamp_ns = 0  # use something like total_cycle_count * cycle_time
+
+            TraceLogger.instance().emit_trace("read", self.computational_graph.input1_address, 0, size_A, timestamp_ns, "A", (M, N, K), self.function_name)
+            TraceLogger.instance().emit_trace("read", self.computational_graph.input2_address, 0, size_B, timestamp_ns, "B", (M, N, K), self.function_name)
+            TraceLogger.instance().emit_trace("write",self.computational_graph.output_address, 0, size_C, self.latency, "C", (M, N, K), self.function_name)
+
+
             return self.latency
+        print("we never get to here??")
         if compile_mode == "exhaustive":
             for l2_tile_M_log2 in range(5, ceil(log2(self.computational_graph.M)) + 1):
                 l2_tile_M = 2**l2_tile_M_log2
@@ -745,6 +789,7 @@ class Matmul(Operator):
         mapping: Mapping,
         pcb_module: Device,
     ) -> int:
+        print("SIMUALTE IS CALLED")
         if self.look_up_table is None:
             self.look_up_table = pd.read_csv(
                 f"./systolic_array_model/look_up_table_{pcb_module.compute_module.core.systolic_array.array_height}_{pcb_module.compute_module.core.systolic_array.array_width}.csv",
@@ -783,6 +828,10 @@ class Matmul(Operator):
         N = computational_graph.N
         K = computational_graph.K
         data_type = computational_graph.data_type
+
+        input1_address = computational_graph.input1_address
+        input2_address = computational_graph.input2_address
+        output_address = computational_graph.output_address
 
         l2_tile_M = mapping.l2_tile_M
         l2_tile_N = mapping.l2_tile_N
@@ -914,15 +963,30 @@ class Matmul(Operator):
             l2_tile = l2_tiles[m, n, k]
             previous_l2_tile = l2_tiles[previous_m, previous_n, previous_k]
 
+            size_A = l2_tile.M * l2_tile.K * data_type.word_size
+            size_B = l2_tile.K * l2_tile.N * data_type.word_size
+
+            # Offset (assuming row-major layout)
+            offset_A = (m * l2_tile.M * computational_graph.K + k * l2_tile.K) * data_type.word_size
+            offset_B = (k * l2_tile.K * computational_graph.N + n * l2_tile.N) * data_type.word_size
+
             # current tile read latency
+            print("READING TILE")
             if m == previous_m and k == previous_k:
+                #TODO: read B only
                 current_tile_read_cycle_count = l2_tile.K_N_io_cycle_count
+                TraceLogger.instance().emit_trace("read", self.input2_address, offset_B, size_B, current_tile_read_cycle_count, "B", (m, n, k), self.function_name)
             elif n == previous_n and k == previous_k:
+                #TODO: read A only
                 current_tile_read_cycle_count = l2_tile.M_K_io_cycle_count
+                TraceLogger.instance().emit_trace("read", self.input1_address, offset_A, size_A, current_tile_read_cycle_count, "A", (m, n, k), self.function_name)
             else:
+                #TODO: # read A and B
                 current_tile_read_cycle_count = (
                     l2_tile.M_K_io_cycle_count + l2_tile.K_N_io_cycle_count
                 )
+                TraceLogger.instance().emit_trace("read", self.input1_address, offset_A, size_A, current_tile_read_cycle_count, "A", (m, n, k), self.function_name)
+                TraceLogger.instance().emit_trace("read", self.input2_address, offset_B, size_B, current_tile_read_cycle_count, "B", (m, n, k), self.function_name)
             if k > 0 and not (m == previous_m and n == previous_n):
                 current_tile_read_cycle_count += l2_tile.M_N_io_cycle_count
             # previous tile compute latency
@@ -933,8 +997,10 @@ class Matmul(Operator):
                 )
             # previous tile write latency
             if m == previous_m and n == previous_n:
+                # TODO: Previous tile’s C offset and size
                 previous_tile_write_cycle_count = 0
             else:
+                # Write for last tile (m,n)
                 previous_tile_write_cycle_count = previous_l2_tile.M_N_io_cycle_count
 
             # read current tile, compute previous tile, write previous tile
