@@ -120,7 +120,7 @@ class BatchedMatmul(Operator):
 
 
 class Matmul(Operator):
-    def __init__(self, data_type: DataType, addresses = [0, 0, 0]):
+    def __init__(self, data_type: DataType, addresses = [0, 0, 0], function_name = 'Matmul'):
         super().__init__(0, 0, 0, 0, data_type)
         self.input1_shape = None
         self.input2_shape = None
@@ -134,7 +134,7 @@ class Matmul(Operator):
         self.look_up_table = None
         self.best_mapping = None
 
-        self.function_name = "Matmul"
+        self.function_name = function_name
 
     def __call__(self, input1: Tensor, input2: Tensor) -> Tensor:
         # [bs, M, K] * [K, N] = [bs, M, N]
@@ -144,6 +144,7 @@ class Matmul(Operator):
         self.input2_shape = input2.shape
         print(f"Matmul input1 shape: {self.input1_shape}")
         print(f"Matmul input2 shape: {self.input2_shape}")
+        print(f"Addresses input1: {self.input1_address}")
 
         
 
@@ -305,45 +306,49 @@ class Matmul(Operator):
         pcb_module: Device,
         compile_mode: str = "exhaustive",
     ):  
-        print("COMPILE AND SIMULATE CALLED")
         min_cycle_count = 2**63 - 1
         best_mapping = None
         M = self.computational_graph.M
         N = self.computational_graph.N
         K = self.computational_graph.K
-        print(compile_mode)
         if (M == 1 or N == 1) and (
             compile_mode == "heuristic-GPU"
             or compile_mode == "heuristic-our-throughput"
         ):
             working_set_size = M * K + N * K + M * N
             total_io_count = working_set_size * self.data_type.word_size
-            io_latency = total_io_count / pcb_module.io_module.bandwidth
-            total_flop_count = 2 * M * N * K
-            compute_latency = (
-                total_flop_count
-                / pcb_module.compute_module.core.vector_unit.total_vector_flops_per_cycle
-                / pcb_module.compute_module.core_count
-                / pcb_module.compute_module.clock_freq
+            # print(f"total IO count: {total_io_count}")
+            fits_l2 = (
+                working_set_size * self.data_type.word_size <= pcb_module.compute_module.l2_size
             )
-            self.latency = max(
-                compute_latency, io_latency
-            )  # + pcb_module.io_module.latency * 2
+            # print(fits_l2)
+            if fits_l2:
+
+                io_latency = total_io_count / pcb_module.io_module.bandwidth
+                total_flop_count = 2 * M * N * K
+                compute_latency = (
+                    total_flop_count
+                    / pcb_module.compute_module.core.vector_unit.total_vector_flops_per_cycle
+                    / pcb_module.compute_module.core_count
+                    / pcb_module.compute_module.clock_freq
+                )
+                self.latency = max(
+                    compute_latency, io_latency
+                )  # + pcb_module.io_module.latency * 2
 
 
-            size_A = M * K * self.data_type.word_size
-            size_B = K * N * self.data_type.word_size
-            size_C = M * N * self.data_type.word_size
+                size_A = M * K * self.data_type.word_size
+                size_B = K * N * self.data_type.word_size
+                size_C = M * N * self.data_type.word_size
 
-            timestamp_ns = 0  # use something like total_cycle_count * cycle_time
+                timestamp_ns = 0  # use something like total_cycle_count * cycle_time
 
-            TraceLogger.instance().emit_trace("read", self.computational_graph.input1_address, 0, size_A, timestamp_ns, "A", (M, N, K), self.function_name)
-            TraceLogger.instance().emit_trace("read", self.computational_graph.input2_address, 0, size_B, timestamp_ns, "B", (M, N, K), self.function_name)
-            TraceLogger.instance().emit_trace("write",self.computational_graph.output_address, 0, size_C, self.latency, "C", (M, N, K), self.function_name)
+                TraceLogger.instance().emit_trace("read", self.computational_graph.input1_address, 0, size_A, timestamp_ns, "A", (M, N, K), self.function_name)
+                TraceLogger.instance().emit_trace("read", self.computational_graph.input2_address, 0, size_B, timestamp_ns, "B", (M, N, K), self.function_name)
+                TraceLogger.instance().emit_trace("write",self.computational_graph.output_address, 0, size_C, self.latency, "C", (M, N, K), self.function_name)
 
 
-            return self.latency
-        print("we never get to here??")
+                return self.latency
         if compile_mode == "exhaustive":
             for l2_tile_M_log2 in range(5, ceil(log2(self.computational_graph.M)) + 1):
                 l2_tile_M = 2**l2_tile_M_log2
@@ -789,7 +794,6 @@ class Matmul(Operator):
         mapping: Mapping,
         pcb_module: Device,
     ) -> int:
-        print("SIMUALTE IS CALLED")
         if self.look_up_table is None:
             self.look_up_table = pd.read_csv(
                 f"./systolic_array_model/look_up_table_{pcb_module.compute_module.core.systolic_array.array_height}_{pcb_module.compute_module.core.systolic_array.array_width}.csv",
@@ -971,7 +975,6 @@ class Matmul(Operator):
             offset_B = (k * l2_tile.K * computational_graph.N + n * l2_tile.N) * data_type.word_size
 
             # current tile read latency
-            print("READING TILE")
             if m == previous_m and k == previous_k:
                 #TODO: read B only
                 current_tile_read_cycle_count = l2_tile.K_N_io_cycle_count

@@ -31,7 +31,7 @@ model_auto_regression = TransformerBlockAutoRegressionTP(
 #     Tensor([batch_size, input_seq_length, model_init.d_model], data_type_dict["fp16"])
 # )
 _ = model_auto_regression(
-    Tensor([batch_size, device_count, model_auto_regression.d_model], data_type_dict["fp16"]),
+    Tensor([batch_size, 1, model_auto_regression.d_model], data_type_dict["fp16"]),
     input_seq_length + output_seq_length,
 )
 auto_regression_latency_simulated = model_auto_regression.compile_and_simulate(
