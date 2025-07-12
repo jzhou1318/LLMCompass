@@ -1,4 +1,4 @@
-from utils import size
+from utils import size, TraceLogger
 from typing import List, Tuple
 from hardware_model.device import Device
 from software_model.operators import Operator
@@ -17,15 +17,23 @@ def gelu_gpu(input: torch.Tensor) -> torch.Tensor:
 
 # x * 0.5 * (1.0 + torch.tanh(0.79788456 * x * (1 + 0.044715 * x * x)))
 class GeLU(Operator):
-    def __init__(self, data_type: DataType):
+    def __init__(self, data_type: DataType, addresses = [0, 0], function_name = 'GeLU'):
         super().__init__(0, 0, 0, 0, data_type)
         self.shape = None
+
+        self.input1_address = addresses[0]
+        self.output_address = addresses[1]
+
+        self.function_name = function_name
 
     def __call__(self, input: Tensor) -> Tensor:
         assert self.data_type == input.data_type
         self.shape = input.shape
         self.M = size(input.shape[:])
-        self.computational_graph = self.ComputationalGraph(self.M, self.data_type)
+        self.computational_graph = self.ComputationalGraph(self.M, 
+                                                            self.data_type,
+                                                            self.input1_address,
+                                                            self.output_address)
         return input
 
     def roofline_model(self, pcb_module: Device):
@@ -56,9 +64,13 @@ class GeLU(Operator):
         print(f"{self.shape}, {self.latency_on_gpu*1e6}us")
 
     class ComputationalGraph:
-        def __init__(self, M: int, data_type: DataType):            
+        def __init__(self, M: int, data_type: DataType, 
+                        input1_address = 0,
+                        output_address = 0):          
             self.M = M
             self.data_type = data_type
+            self.input1_address = input1_address
+            self.output_address = output_address
 
     def compile_and_simulate(self, pcb_module: Device, compile_mode: str):
         self.computational_graph.data_type = (
@@ -87,6 +99,10 @@ class GeLU(Operator):
             / pcb_module.compute_module.core_count
             / pcb_module.compute_module.clock_freq
         )
+
+        input1_address = self.computational_graph.input1_address
+        output_address = self.computational_graph.output_address
+        TraceLogger.instance().emit_trace("read", input1_address, 0, M * data_type.word_size, io_latency, "A", (M,1), self.function_name)
 
         return max(compute_latency, io_latency)
 

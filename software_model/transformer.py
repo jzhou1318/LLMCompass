@@ -206,6 +206,12 @@ class TransformerBlockInitComputationTP(Operator):
             self.Q_mul_K.compile_and_simulate(device, compile_mode)
             + device.compute_module.overhead.matmul
         )
+
+        softmax_latency = (
+            self.A_softmax.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.softmax
+        )
+
         print("simulating a_mul_v")
         a_mul_v_latency = (
             self.A_mul_V.compile_and_simulate(device, compile_mode)
@@ -216,16 +222,34 @@ class TransformerBlockInitComputationTP(Operator):
             self.H_matmul0.compile_and_simulate(device, compile_mode)
             + device.compute_module.overhead.matmul
         )
+        layernorm0_latency = (
+            self.layer_norm0.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.layernorm
+        )
+
         print("simulating h1_matmul1")
         h1_matmul1_latency = (
             self.H_matmul1.compile_and_simulate(device, compile_mode)
             + device.compute_module.overhead.matmul
         )
+
+        # gelu
+        gelu_latency = (
+            self.H_gelu.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.gelu
+        )
+
         print("simulating h2_matmul2")
         h2_matmul2_latency = (
             self.H_matmul2.compile_and_simulate(device, compile_mode)
             + device.compute_module.overhead.matmul
         )
+
+        layernorm1_latency = (
+            self.layer_norm1.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.layernorm
+        )
+
         print("finish matmul simulation")
 
         matmul_total_latency = (
@@ -238,22 +262,7 @@ class TransformerBlockInitComputationTP(Operator):
         )
 
         # normalization
-        softmax_latency = (
-            self.A_softmax.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.softmax
-        )
-        layernorm_latency = (
-            self.layer_norm0.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.layernorm
-        )
-
-        normlization_total_latency = softmax_latency + layernorm_latency * 2
-
-        # gelu
-        gelu_latency = (
-            self.H_gelu.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.gelu
-        )
+        normlization_total_latency = softmax_latency + layernorm0_latency + layernorm1_latency
 
         # allreduce
         if self.device_count > 1:
@@ -368,9 +377,15 @@ class TransformerBlockAutoRegressionTP(Operator):
         self.W2 = Tensor([4 * d // device_count, d], data_type)
         # operators per device
         # # multi-head attention
-        self.Q_proj = Matmul(data_type, function_name = "Q_proj")
-        self.K_proj = Matmul(data_type, function_name = "K_proj")
-        self.V_proj = Matmul(data_type, function_name = "V_proj")
+        self.Q_proj = Matmul(data_type, 
+                                addresses = [int(0x14ab43e06400), int(0x14ab43e0c800), int(0x14ac8e000000)],
+                                function_name = "Q_proj")
+        self.K_proj = Matmul(data_type, 
+                                addresses = [int(0x14ab43e06400), int(0x14ab43e0e100), int(0x14ac8e001900)],
+                                function_name = "K_proj")
+        self.V_proj = Matmul(data_type, 
+                                addresses = [int(0x14ab43e06400), int(0x14ab43e0fa00), int(0x14ac8e003200)],
+                                function_name = "V_proj")
         self.Q_reshape = Reshape(data_type)
         self.K_reshape = Reshape(data_type)
         self.V_reshape = Reshape(data_type)
@@ -379,21 +394,35 @@ class TransformerBlockAutoRegressionTP(Operator):
         self.V_transpose = Transpose(data_type)
         self.K_concat = Concat(data_type)
         self.V_concat = Concat(data_type)
-        self.Q_mul_K = BatchedMatmul(data_type)
-        self.A_softmax = Softmax(data_type)
-        self.A_mul_V = BatchedMatmul(data_type)
+        self.Q_mul_K = BatchedMatmul(data_type,
+                                        addresses = [int(0x14ab43e0c800), int(0x14a9a09fac00), int(0x14ab43e0e100)],
+                                        function_name = "Q_mul_K")
+        self.A_softmax = Softmax(data_type,
+                                        addresses = [int(0x14a9a09fb400), 0, 0],
+                                        function_name = "softmax")
+        self.A_mul_V = BatchedMatmul(data_type,
+                                        addresses = [int(0x14a9a09fb400), int(0x14ab43e1f400), int(0x14ab43e0fa00)],
+                                        function_name = "A_mul_V")
         self.H_transpose = Transpose(data_type)
         self.H_reshape = Reshape(data_type)
-        self.H_matmul0 = Matmul(data_type, function_name = "H_matmul0")
-        self.layer_norm0 = LayerNorm(data_type)
+        self.H_matmul0 = Matmul(data_type,
+                                        addresses = [int(0x14ab43e25800), int(0x14ab43e1f400), int(0x14ac90640000)],
+                                        function_name = "H_matmul0")
+        self.layer_norm0 = LayerNorm(data_type,
+                                        addresses = [int(0x14ab43e1f400), 0, 0],
+                                        function_name = "layer_norm0")
         self.allreduce_mha = AllReduceMultiPCB(data_type)
         # # feed-forward network
         self.H_matmul1 = Matmul(data_type, 
                                 addresses = [int(0x14874b2ad000), int(0x148386000000), int(0x14874b2b7000)],
                                 function_name = "H_matmul1")
-        self.H_gelu = GeLU(data_type)
+        self.H_gelu = GeLU(data_type,
+                                        addresses = [int(0x14acc3e2bc00), int(0x14acc3e5dc00)],
+                                        function_name = "gelu")
         self.H_matmul2 = Matmul(data_type, function_name = "H_matmul2")
-        self.layer_norm1 = LayerNorm(data_type)
+        self.layer_norm1= LayerNorm(data_type,
+                                        addresses = [int(0x14acc3e09800), 0, 0],
+                                        function_name = "layer_norm1")
         self.allreduce_ffn = AllReduceMultiPCB(data_type)
 
     def __call__(self, x: Tensor, seq_len: int) -> Tensor:
@@ -443,7 +472,7 @@ class TransformerBlockAutoRegressionTP(Operator):
         assert h0.shape == [b, 1, h // dev_cnt, d_h]
         h0 = self.H_reshape(h0, [b, 1, d // dev_cnt])
         assert h0.shape == [b, 1, d // dev_cnt]
-        
+
         h0 = self.H_matmul0(h0, self.W0)  #  [b, 1, d]
         assert h0.shape == [b, 1, d]
         h0 = self.layer_norm0(h0)
@@ -556,43 +585,80 @@ class TransformerBlockAutoRegressionTP(Operator):
         return self.roofline_latency
 
     def compile_and_simulate(self, system: System, compile_mode: str):
-        pcb = system.device
+        device = system.device
         interconnect = system.interconnect
 
         # matmul
-        # print("simulating qkv")
-        qkv_latency = 3 * (
-            self.Q_proj.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.matmul
+        print("simulating q")
+        q_latency = (
+            self.Q_proj.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.matmul
         )
-        # print("simulating q_mul_k")
+        print("simulating k")
+        k_latency = (
+            self.K_proj.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.matmul
+        )
+        print("simulating v")
+        v_latency = (
+            self.V_proj.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.matmul
+        )
+        print("simulating q_mul_k")
         q_mul_k_latency = (
-            self.Q_mul_K.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.matmul
-        )
-        # print("simulating a_mul_v")
-        a_mul_v_latency = (
-            self.A_mul_V.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.matmul
-        )
-        # print("simulating h_matmul0")
-        h_matmul0_latency = (
-            self.H_matmul0.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.matmul
-        )
-        # print("simulating h1_matmul1")
-        h1_matmul1_latency = (
-            self.H_matmul1.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.matmul
-        )
-        # print("simulating h2_matmul2")
-        h2_matmul2_latency = (
-            self.H_matmul2.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.matmul
+            self.Q_mul_K.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.matmul
         )
 
+        softmax_latency = (
+            self.A_softmax.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.softmax
+        )
+
+        print("simulating a_mul_v")
+        a_mul_v_latency = (
+            self.A_mul_V.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.matmul
+        )
+        print("simulating h_matmul0")
+        h_matmul0_latency = (
+            self.H_matmul0.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.matmul
+        )
+        layernorm0_latency = (
+            self.layer_norm0.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.layernorm
+        )
+
+        print("simulating h1_matmul1")
+        h1_matmul1_latency = (
+            self.H_matmul1.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.matmul
+        )
+
+        # gelu
+        gelu_latency = (
+            self.H_gelu.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.gelu
+        )
+
+        print("simulating h2_matmul2")
+        h2_matmul2_latency = (
+            self.H_matmul2.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.matmul
+        )
+
+        layernorm1_latency = (
+            self.layer_norm1.compile_and_simulate(device, compile_mode)
+            + device.compute_module.overhead.layernorm
+        )
+
+        print("finish matmul simulation")
+
         matmul_total_latency = (
-            qkv_latency
+            q_latency
+            + k_latency
+            + v_latency
             + q_mul_k_latency
             + a_mul_v_latency
             + h_matmul0_latency
@@ -601,22 +667,7 @@ class TransformerBlockAutoRegressionTP(Operator):
         )
 
         # normalization
-        softmax_latency = (
-            self.A_softmax.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.softmax
-        )
-        layernorm_latency = (
-            self.layer_norm0.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.layernorm
-        )
-
-        normlization_total_latency = softmax_latency + layernorm_latency * 2
-
-        # gelu
-        gelu_latency = (
-            self.H_gelu.compile_and_simulate(pcb, compile_mode)
-            + pcb.compute_module.overhead.gelu
-        )
+        normlization_total_latency = softmax_latency + layernorm0_latency + layernorm1_latency
 
         # allreduce
         if self.device_count > 1:
@@ -643,7 +694,8 @@ class TransformerBlockAutoRegressionTP(Operator):
             + gelu_latency
             + allreduce_total_latency
         )
-        self.simluate_log = f"{qkv_latency}, {q_mul_k_latency}, {a_mul_v_latency}, {h_matmul0_latency}, {h1_matmul1_latency}, {h2_matmul2_latency}, {softmax_latency}, {layernorm_latency}, {layernorm_latency}, {gelu_latency}, {allreduce_latency}, {allreduce_latency}"
+        self.simluate_log = ""
+        #f"{q_latency}, {k_latency},{v_latency}, {q_mul_k_latency}, {a_mul_v_latency}, {h_matmul0_latency}, {h1_matmul1_latency}, {h2_matmul2_latency}, {softmax_latency}, {layernorm_latency}, {layernorm_latency}, {gelu_latency}, {allreduce_latency}, {allreduce_latency}"
         return self.latency
 
     def run_on_gpu(self):

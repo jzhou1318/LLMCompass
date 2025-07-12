@@ -1,4 +1,4 @@
-from utils import size
+from utils import size, TraceLogger
 from typing import List, Tuple
 from hardware_model.device import Device
 from software_model.operators import Operator
@@ -11,9 +11,12 @@ import numpy as np
 
 
 class Softmax(Operator):
-    def __init__(self, data_type: DataType):
+    def __init__(self, data_type: DataType, addresses = [0, 0, 0], function_name = 'Softmax'):
         super().__init__(0, 0, 0, 0, data_type)
         self.shape = None
+        self.input1_address = addresses[0]
+
+        self.function_name = function_name
 
     def __call__(self, input: Tensor) -> Tensor:
         assert self.data_type == input.data_type
@@ -21,7 +24,7 @@ class Softmax(Operator):
         self.M = size(input.shape[:-1])
         self.N = input.shape[-1]
         self.computational_graph = self.ComputationalGraph(
-            self.M, self.N, self.data_type
+            self.M, self.N, self.data_type, self.input1_address
         )
         return input
 
@@ -29,10 +32,11 @@ class Softmax(Operator):
         print(f"{self.shape}, {self.latency_on_gpu*1e6}us")
 
     class ComputationalGraph:
-        def __init__(self, M: int, N: int, data_type: DataType):
+         def __init__(self, M: int, N: int, data_type: DataType, input1_address = 0):
             self.M = M
             self.N = N
             self.data_type = data_type
+            self.input1_address = input1_address
 
     class Mapping:
         def __init__(
@@ -121,6 +125,7 @@ class Softmax(Operator):
     ) -> int:
         M = computational_graph.M
         N = computational_graph.N
+        input1_address = computational_graph.input1_address
         data_type = computational_graph.data_type
         l2_tile_M = mapping.l2_tile_M
 
@@ -159,6 +164,10 @@ class Softmax(Operator):
         total_cycle_count = 0
         l2_tile_count = ceil(M / l2_tile_M)
         for m in range(l2_tile_count):
+            tile_size = l2_tiles[m].M * l2_tiles[m].N * data_type.word_size
+            tile_offset = m * l2_tile_M * N * data_type.word_size
+            TraceLogger.instance().emit_trace("read", self.input1_address, tile_offset, tile_size, l2_tiles[m].read_cycle_count, "A", (m, N), self.function_name)
+
             total_cycle_count += l2_tiles[m].read_cycle_count
             total_cycle_count += l2_tiles[m].compute_cycle_count
             total_cycle_count += l2_tiles[m].write_cycle_count

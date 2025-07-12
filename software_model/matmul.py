@@ -15,11 +15,18 @@ import copy
 
 
 class BatchedMatmul(Operator):
-    def __init__(self, data_type: DataType):
+    def __init__(self, data_type: DataType, addresses = [0, 0, 0], function_name = 'BatchedMatmul'):
         super().__init__(0, 0, 0, 0, data_type)
         self.input1_shape = None
         self.input2_shape = None
         self.output_shape = None
+
+        print(f"Addresses: {addresses}")
+        self.input1_address = addresses[0]
+        self.input2_address = addresses[1]
+        self.output_address = addresses[2]
+
+        self.function_name = function_name
 
     def __call__(self, input1: Tensor, input2: Tensor) -> Tensor:
         # [b, M, K] * [b, K, N] = [b, M, N]
@@ -55,15 +62,51 @@ class BatchedMatmul(Operator):
     #     return self.latency
 
     def compile_and_simulate(self, pcb_module: Device, compile_mode: str):
-        matmul = Matmul(self.data_type)
-        _ = matmul(Tensor([self.M, self.K]), Tensor([self.K, self.N]))
-        matmul_latency1 = (
-            matmul.compile_and_simulate(pcb_module, compile_mode) * self.bs
-        )
+        # TODO: add a log boolean cuz i only want to emit for one (do number 2 for now)
+        # matmul = Matmul(self.data_type, function_name = "BatchedMatmul")
+        # _ = matmul(Tensor([self.M, self.K]), Tensor([self.K, self.N]))
+        # matmul_latency1 = (
+        #     matmul.compile_and_simulate(pcb_module, compile_mode) * self.bs
+        # )
+        # matmul_latency1 = 0
+        # for b in range(self.bs):
+        #     offset_A = b * self.M * self.K * self.data_type.word_size
+        #     offset_B = b * self.K * self.N * self.data_type.word_size
+        #     offset_C = b * self.M * self.N * self.data_type.word_size
 
-        matmul = Matmul(self.data_type)
+        #     matmul = Matmul(
+        #         self.data_type,
+        #         addresses=[
+        #             self.input1_address + offset_A,
+        #             self.input2_address + offset_B,
+        #             self.output_address + offset_C,
+        #         ],
+        #         function_name=f"{self.function_name}_batch{b}"
+        #     )
+
+        #     _ = matmul(Tensor([self.M, self.K]), Tensor([self.K, self.N]))
+        #     matmul_latency1 += matmul.compile_and_simulate(pcb_module, compile_mode)
+
+        # matmul = Matmul(self.data_type, function_name = "BatchedMatmul")
+        # _ = matmul(
+        #     Tensor([self.M, self.K * self.bs]), Tensor([self.K * self.bs, self.N])
+        # )
+        # matmul_latency2 = (
+        #     matmul.compile_and_simulate(pcb_module, compile_mode)
+        #     + (self.bs - 1)
+        #     * self.M
+        #     * self.N
+        #     * self.data_type.word_size
+        #     / pcb_module.io_module.bandwidth
+        # )
+        matmul = Matmul(
+            self.data_type,
+            addresses=[self.input1_address, self.input2_address, self.output_address],
+            function_name=self.function_name + "_flat"
+        )
         _ = matmul(
-            Tensor([self.M, self.K * self.bs]), Tensor([self.K * self.bs, self.N])
+            Tensor([self.M, self.K * self.bs]),
+            Tensor([self.K * self.bs, self.N])
         )
         matmul_latency2 = (
             matmul.compile_and_simulate(pcb_module, compile_mode)
@@ -73,7 +116,8 @@ class BatchedMatmul(Operator):
             * self.data_type.word_size
             / pcb_module.io_module.bandwidth
         )
-        self.latency = min(matmul_latency1, matmul_latency2)
+        self.latency = matmul_latency2
+        # self.latency = min(matmul_latency1, matmul_latency2)
         return self.latency
 
     def run_on_gpu(
@@ -142,9 +186,9 @@ class Matmul(Operator):
         assert self.data_type == input2.data_type
         self.input1_shape = input1.shape
         self.input2_shape = input2.shape
-        print(f"Matmul input1 shape: {self.input1_shape}")
-        print(f"Matmul input2 shape: {self.input2_shape}")
-        print(f"Addresses input1: {self.input1_address}")
+        # print(f"Matmul input1 shape: {self.input1_shape}")
+        # print(f"Matmul input2 shape: {self.input2_shape}")
+        # print(f"Addresses input1: {self.input1_address}")
 
         
 
@@ -163,9 +207,9 @@ class Matmul(Operator):
             self.input2_address,
             self.output_address
         )
-        print(f"Matmul M: {self.M}")
-        print(f"Matmul N: {self.N}")
-        print(f"Matmul K: {self.K}")
+        # print(f"Matmul M: {self.M}")
+        # print(f"Matmul N: {self.N}")
+        # print(f"Matmul K: {self.K}")
         self.flop_count = 2 * self.M * self.K * self.N
         self.io_count = self.M * self.K + self.K * self.N + self.M * self.N
         # print(f'{self.M}, {self.N}, {self.K}')
@@ -343,12 +387,32 @@ class Matmul(Operator):
 
                 timestamp_ns = 0  # use something like total_cycle_count * cycle_time
 
-                TraceLogger.instance().emit_trace("read", self.computational_graph.input1_address, 0, size_A, timestamp_ns, "A", (M, N, K), self.function_name)
+                bytes_per_thread = 128
+                num_threads_A = math.ceil(size_A / bytes_per_thread)
+                for tid in range(num_threads_A):
+                    offset_A = tid * bytes_per_thread
+                    actual_size = min(bytes_per_thread, size_A - offset_A)  # Handle remainder
+                    TraceLogger.instance().emit_trace(
+                        "read",
+                        self.computational_graph.input1_address,
+                        offset_A,
+                        actual_size,
+                        timestamp_ns,
+                        "A",
+                        (M, N, K),
+                        self.function_name,
+                        thread_id=tid
+                    )
+
+                # TraceLogger.instance().emit_trace("read", self.computational_graph.input1_address, 0, size_A, timestamp_ns, "A", (M, N, K), self.function_name)
                 TraceLogger.instance().emit_trace("read", self.computational_graph.input2_address, 0, size_B, timestamp_ns, "B", (M, N, K), self.function_name)
+                TraceLogger.instance().emit_trace("read",self.computational_graph.output_address, 0, size_C, self.latency, "C", (M, N, K), self.function_name)
                 TraceLogger.instance().emit_trace("write",self.computational_graph.output_address, 0, size_C, self.latency, "C", (M, N, K), self.function_name)
 
+                print("short-circuit")
 
                 return self.latency
+        print("more complex")
         if compile_mode == "exhaustive":
             for l2_tile_M_log2 in range(5, ceil(log2(self.computational_graph.M)) + 1):
                 l2_tile_M = 2**l2_tile_M_log2
